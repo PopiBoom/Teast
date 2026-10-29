@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Memento Mori — kinetic typography</title>
+<style>
+  html,body{margin:0;background:#000;overflow:hidden}
+  #stage{display:block;background:#000;margin:0 auto}
+</style>
+</head>
+<body>
+<canvas id="stage" width="1920" height="1080"></canvas>
+<script>
+/* ===========================================================================
+   Memento Mori — кинетическая типографика (детерминированный таймлайн)
+   Герой — текст. Один цвет (ЖИВИ). Сдвиги, маски, масштаб, ракурс.
+   renderAt(t) — чистая функция времени t (сек) -> кадр в canvas.
+   =========================================================================== */
+const W = 1920, H = 1080, FPS = 60, TOTAL = 22.0;
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+
+/* ---------- утилиты ---------- */
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,p)=>a+(b-a)*p;
+const smooth=(a,b,x)=>{const p=clamp((x-a)/(b-a),0,1);return p*p*(3-2*p);};
+const eOutCubic=p=>1-Math.pow(1-p,3);
+const eOutQuint=p=>1-Math.pow(1-p,5);
+const eInCubic=p=>p*p*p;
+const eInOut=p=>p<.5?4*p*p*p:1-Math.pow(-2*p+2,3)/2;
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function hashF(i){let x=Math.sin(i*127.1+311.7)*43758.5453;return x-Math.floor(x);}
+// гладкий привязанный к t «дрожащий» дрейф
+const drift=(t,f,ph)=>Math.sin(t*f+ph);
+
+/* ---------- палитра ---------- */
+const BONE='#ece7df', ASH='#8d8880', ASH_D='#5c5952';
+function bg(t){ // холодный -> тёплый на вольте
+  const w=smooth(13.8,15.4,t)*0.9 + smooth(17,19,t)*0.0;
+  const c=[10,10,13], warm=[22,15,10];
+  return `rgb(${Math.round(lerp(c[0],warm[0],w))},${Math.round(lerp(c[1],warm[1],w))},${Math.round(lerp(c[2],warm[2],w))})`;
+}
+function warmth(t){return smooth(13.8,15.4,t)*0.9;}
+
+/* ---------- шрифты ---------- */
+const FONT={
+  black:s=>`900 ${s}px "Inter Display","Inter",sans-serif`,
+  heavy:s=>`800 ${s}px "Inter Display","Inter",sans-serif`,
+  thin:s=>`200 ${s}px "Inter Display","Inter",sans-serif`,
+  light:s=>`300 ${s}px "Inter Display","Inter",sans-serif`,
+  serif:s=>`italic 500 ${s}px "DejaVu Serif","Liberation Serif",serif`,
+  serifR:s=>`500 ${s}px "DejaVu Serif","Liberation Serif",serif`,
+  mono:s=>`500 ${s}px "JetBrains Mono","DejaVu Sans Mono",monospace`,
+};
+
+/* ===========================================================================
+   Камера / псевдо-3D проектор.  z=0 -> масштаб 1.  Дальше -> меньше (параллакс).
+   =========================================================================== */
+const F=1000, CZ0=-1000;
+function cameraAt(t){
+  // связная траектория: наезд из темноты, дрейф, провал на S5, толчок на вольте
+  const czKf=[[0,-1420],[2.6,-1000],[10.2,-1000],[10.7,-975],[11.6,-1010],
+              [12.8,-1320],[13.8,-1270],[14.6,-965],[16.5,-1010],[17.4,-1045],[22,-1065]];
+  const cyKf=[[0,0],[10.2,0],[11.6,46],[12.8,60],[13.8,30],[14.8,-26],[17.4,-6],[22,0]];
+  const rollKf=[[0,0],[2.6,-0.9],[3.5,0],[10.7,0.7],[11.6,0],[14.6,-0.6],[15.4,0],[22,0]];
+  const kf=(arr)=>{for(let i=0;i<arr.length-1;i++){if(t<=arr[i+1][0]){const p=clamp((t-arr[i][0])/(arr[i+1][0]-arr[i][0]),0,1);return lerp(arr[i][1],arr[i+1][1],eInOut(p));}}return arr[arr.length-1][1];};
+  let cx=22*drift(t,0.45,0.3)+16*drift(t,0.22,2.2)+78*smooth(5.2,9.8,t)*(1-smooth(9.8,10.6,t));// боковой тракинг + параллакс S3-S4
+  let cy=kf(cyKf)+9*drift(t,0.33,1.1);
+  let cz=kf(czKf);
+  let roll=(kf(rollKf)+0.25*drift(t,0.3,0.6))*Math.PI/180;
+  return {cx,cy,cz,roll};
+}
+function project(x,y,z,cam){
+  const dz=z-cam.cz, s=F/dz;
+  return {x:W/2+(x-cam.cx)*s, y:H/2+(y-cam.cy)*s, s};
+}
+
+/* ===========================================================================
+   Отрисовка слова (трекинг, поворот, масштаб по осям, маска-вайп, свечение, CA)
+   =========================================================================== */
+function wordWidth(text,font,tracking){
+  ctx.font=font;let w=0;for(const ch of text)w+=ctx.measureText(ch).width+tracking;
+  return w-tracking;
+}
+function drawWord(text,sx,sy,o){
+  const font=o.font, tracking=o.tracking||0, alpha=o.alpha==null?1:o.alpha;
+  if(alpha<=0.003)return;
+  ctx.save();
+  ctx.globalAlpha=alpha;
+  ctx.translate(sx,sy);
+  if(o.rot)ctx.rotate(o.rot);
+  ctx.scale((o.hscale||1)*(o.s||1),(o.vscale||1)*(o.s||1));
+  ctx.font=font;ctx.textBaseline='middle';ctx.textAlign='left';
+  const w=wordWidth(text,font,tracking);
+  // маска-вайп (в локальных координатах)
+  if(o.clip!=null){
+    const rv=-w/2+ (w+40)*clamp(o.clip,0,1);
+    ctx.beginPath();ctx.rect(-w/2-20,-o.sizeRef*0.9,(rv-(-w/2-20)),o.sizeRef*1.8);ctx.clip();
+  }
+  const drawGlyphs=(fill,offx,offy)=>{
+    ctx.fillStyle=fill;let x=-w/2+(offx||0);
+    for(const ch of text){ctx.fillText(ch,x,(offy||0));x+=ctx.measureText(ch).width+tracking;}
+  };
+  if(o.color==='live'){
+    // единственный цвет: тёплый янтарь + bloom + хром. аберрация
+    const g=ctx.createLinearGradient(0,-o.sizeRef*0.55,0,o.sizeRef*0.55);
+    g.addColorStop(0,'#ffe3a6');g.addColorStop(0.5,'#ffab3c');g.addColorStop(1,'#ff6a16');
+    const glow=o.glow||0;
+    if(glow>0){
+      ctx.save();ctx.globalCompositeOperation='lighter';
+      ctx.shadowColor='rgba(255,150,54,'+(0.9*glow)+')';ctx.shadowBlur=70*glow;
+      drawGlyphs('rgba(255,150,54,'+(0.33*glow)+')');
+      ctx.shadowBlur=150*glow;drawGlyphs('rgba(255,110,30,'+(0.22*glow)+')');
+      ctx.restore();
+    }
+    if(o.ca>0){
+      ctx.save();ctx.globalCompositeOperation='lighter';
+      drawGlyphs('rgba(255,40,40,0.55)',-o.ca,0);
+      drawGlyphs('rgba(40,120,255,0.5)',o.ca,0);
+      ctx.restore();
+    }
+    ctx.shadowColor='rgba(0,0,0,0.35)';ctx.shadowBlur=o.sizeRef*0.03;ctx.shadowOffsetY=o.sizeRef*0.015;
+    drawGlyphs(g);
+  }else{
+    if(o.shadow!==false){ctx.shadowColor='rgba(0,0,0,0.55)';ctx.shadowBlur=o.sizeRef*0.05;ctx.shadowOffsetY=o.sizeRef*0.02;}
+    drawGlyphs(o.color||BONE);
+    if(o.clip!=null){ // яркая кромка вайпа
+      const rv=-w/2+(w+40)*clamp(o.clip,0,1);
+      ctx.shadowBlur=0;ctx.globalAlpha=alpha*clamp(1-Math.abs(o.clip-0.5)*1.4,0,1)*0.8;
+      ctx.fillStyle='rgba(236,231,223,0.9)';ctx.fillRect(rv-3,-o.sizeRef*0.7,4,o.sizeRef*1.4);
+    }
+  }
+  ctx.restore();
+}
+
+/* ---------- битмап слова для распада (кэш) ---------- */
+const bmpCache={};
+function wordBitmap(text,font,size){
+  const key=text+'|'+font;
+  if(bmpCache[key])return bmpCache[key];
+  const c=document.createElement('canvas');const g=c.getContext('2d');
+  g.font=font;let w=0;for(const ch of text)w+=g.measureText(ch).width;
+  const pad=size*0.4;c.width=Math.ceil(w+pad*2);c.height=Math.ceil(size*1.8);
+  g.font=font;g.textBaseline='middle';g.textAlign='left';g.fillStyle='#ece7df';
+  let x=pad;for(const ch of text){g.fillText(ch,x,c.height/2);x+=g.measureText(ch).width;}
+  const o={canvas:c,w:c.width,h:c.height};bmpCache[key]=o;return o;
+}
+function drawShatter(bmp,sx,sy,s,q){
+  const cols=46,rows=12,cw=bmp.w/cols,ch=bmp.h/rows;
+  ctx.save();
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+    const id=r*cols+c, rnd=hashF(id*1.7), rnd2=hashF(id*3.3+9);
+    const delay=(r/rows)*0.28+rnd*0.14;
+    const qq=clamp((q-delay)/Math.max(0.001,1-delay),0,1);
+    if(qq<=0){ // ещё не осыпалось — рисуем на месте
+      ctx.globalAlpha=1;
+      ctx.drawImage(bmp.canvas,c*cw,r*ch,cw,ch, sx-bmp.w*s/2+c*cw*s, sy-bmp.h*s/2+r*ch*s, cw*s+1, ch*s+1);
+      continue;
+    }
+    const e=eInCubic(qq);
+    const dx=(rnd-0.5)*180*qq*s, dy=e*(bmp.h*0.35+320+rnd2*560)*s;
+    const rot=(rnd-0.5)*1.3*qq, sc=(1-0.28*qq);
+    ctx.globalAlpha=(1-qq)*(1-qq);
+    if(ctx.globalAlpha<0.01)continue;
+    const dcx=sx-bmp.w*s/2+c*cw*s+cw*s/2+dx, dcy=sy-bmp.h*s/2+r*ch*s+ch*s/2+dy;
+    ctx.save();ctx.translate(dcx,dcy);ctx.rotate(rot);ctx.scale(sc,sc);
+    // чуть тёплых угольков в нижних осколках — предвестие ЖИВИ
+    if(rnd2>0.86){ctx.globalCompositeOperation='lighter';ctx.globalAlpha*=0.5;
+      ctx.fillStyle='rgba(255,140,60,0.5)';ctx.fillRect(-cw*s/2,-ch*s/2,cw*s,ch*s);ctx.globalCompositeOperation='source-over';ctx.globalAlpha=(1-qq)*(1-qq);}
+    ctx.drawImage(bmp.canvas,c*cw,r*ch,cw,ch,-cw*s/2,-ch*s/2,cw*s+1,ch*s+1);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/* ===========================================================================
+   ТАЙМЛАЙН СЛОВ (cue).  t0: вход; in/hold/out — длительности фаз.
+   in:  slide | mask | scale | roll | rise | fall
+   out: fade | up | fall | shrink | dissolve | hold
+   pos: мировые координаты (px при z=0).  z по умолчанию 0.
+   =========================================================================== */
+function C(o){o.z=o.z||0;o.inDur=o.inDur||.4;o.hold=o.hold||.6;o.outDur=o.outDur||.4;
+  o.t1=o.t0+o.inDur;o.t2s=o.t1+o.hold;o.t2=o.t2s+o.outDur;return o;}
+const CUES=[
+  // ---- S1 часы ----
+  C({id:'rano',text:'рано или поздно',pos:{x:0,y:360},sizeRef:52,font:FONT.serif(52),color:ASH,
+     t0:0.6,inDur:.7,hold:1.1,outDur:.5,in:'mask',out:'fade',tracking:1}),
+  // ---- S2 MEMENTO MORI ----
+  C({id:'mem',text:'MEMENTO',pos:{x:0,y:-120},sizeRef:200,font:FONT.black(200),color:BONE,tracking:4,
+     t0:2.55,inDur:.55,hold:4.0,outDur:.55,in:'fall',out:'shrink',rollIn:-7}),
+  C({id:'mori',text:'MORI',pos:{x:0,y:110},sizeRef:200,font:FONT.black(200),color:BONE,tracking:10,
+     t0:3.75,inDur:.5,hold:2.8,outDur:.55,in:'mask',out:'shrink'}),
+  // ---- S3 перевод ----
+  C({id:'perevod',text:'помни, что ты умрёшь',pos:{x:0,y:330},sizeRef:64,font:FONT.serif(64),color:ASH,
+     t0:5.5,inDur:.6,hold:1.4,outDur:.5,in:'mask',out:'fade',tracking:1}),
+  // ---- S4 каждый вдох — на один ближе ----
+  C({id:'kajdy',text:'каждый',pos:{x:-320,y:-170},sizeRef:104,font:FONT.light(104),color:BONE,
+     t0:7.7,inDur:.4,hold:.6,outDur:.3,in:'slide',sdx:-260,out:'up'}),
+  C({id:'vdoh',text:'вдох',pos:{x:200,y:10},sizeRef:250,font:FONT.black(250),color:BONE,tracking:2,
+     t0:8.15,inDur:.42,hold:.75,outDur:.35,in:'scale',out:'fade',breath:true}),
+  C({id:'dash',text:'—',pos:{x:-60,y:210},sizeRef:90,font:FONT.thin(90),color:ASH,
+     t0:8.95,inDur:.25,hold:.5,outDur:.25,in:'scale',out:'fade'}),
+  C({id:'naodin',text:'на один',pos:{x:-360,y:255},sizeRef:100,font:FONT.light(100),color:BONE,
+     t0:9.12,inDur:.35,hold:.55,outDur:.3,in:'slide',sdx:-240,out:'up'}),
+  C({id:'blije',text:'ближе',pos:{x:250,y:-110},sizeRef:230,font:FONT.black(230),color:BONE,tracking:2,
+     t0:9.4,inDur:.4,hold:.45,outDur:.3,in:'slide',sdx:300,out:'fade'}),
+  // ---- S5 правда и провал ----
+  C({id:'ty1',text:'ты',pos:{x:0,y:-290},sizeRef:92,font:FONT.light(92),color:ASH,
+     t0:10.3,inDur:.3,hold:.5,outDur:.25,in:'scale',out:'up'}),
+  C({id:'umrosh',text:'УМРЁШЬ',pos:{x:0,y:20},sizeRef:300,font:FONT.black(300),color:BONE,tracking:4,
+     t0:10.65,inDur:.35,hold:.55,outDur:1.15,in:'fall',out:'dissolve',rollIn:0}),
+  // ---- S6 петля ----
+  C({id:'ivse',text:'и всё же.',pos:{x:0,y:0},sizeRef:58,font:FONT.mono(58),color:ASH,
+     t0:13.0,inDur:.45,hold:.45,outDur:.35,in:'fade',out:'fade',tracking:2}),
+  // ---- S7 вольта ----
+  C({id:'neboy',text:'не чтобы бояться,',pos:{x:0,y:-320},sizeRef:68,font:FONT.serif(68),color:ASH,
+     t0:13.95,inDur:.55,hold:.9,outDur:.45,in:'mask',out:'up',tracking:1}),
+  // ЖИВИ — особый случай (см. drawLive)
+  // ---- S8 настоящее ----
+  C({id:'segodnya',text:'сегодня',pos:{x:-360,y:205},sizeRef:98,font:FONT.light(98),color:'#efe6d6',
+     t0:17.5,inDur:.45,hold:1.0,outDur:.5,in:'rise',out:'fade'}),
+  C({id:'ty2',text:'ты',pos:{x:-30,y:325},sizeRef:72,font:FONT.light(72),color:'#d9d1c3',
+     t0:17.85,inDur:.4,hold:1.0,outDur:.5,in:'rise',out:'fade'}),
+  C({id:'est',text:'есть',pos:{x:335,y:180},sizeRef:188,font:FONT.black(188),color:'#f2ead9',tracking:2,
+     t0:18.2,inDur:.45,hold:1.0,outDur:.5,in:'scale',out:'fade'}),
+  // ---- S9 подпись ----
+  C({id:'mmtop',text:'MEMENTO MORI',pos:{x:0,y:-370},sizeRef:52,font:FONT.heavy(52),color:ASH,tracking:12,
+     t0:19.7,inDur:.6,hold:1.7,outDur:0.0,in:'mask',out:'hold'}),
+  C({id:'kapustka',text:'капустка',pos:{x:0,y:-10},sizeRef:150,font:FONT.serif(150),color:'#f1ddbf',
+     t0:20.0,inDur:.7,hold:1.3,outDur:0.0,in:'rise',out:'hold',tracking:2,sign:true}),
+  C({id:'vivere',text:'memento vivere',pos:{x:0,y:180},sizeRef:64,font:FONT.serif(64),color:ASH,tracking:3,
+     t0:20.2,inDur:.7,hold:1.1,outDur:0.0,in:'mask',out:'hold'}),
+];
+
+/* вычисляем состояние cue как чистую функцию t (для motion blur можно сэмплировать t-Δ) */
+function cueState(c,t){
+  if(t<c.t0||t>c.t2+0.001)return null;
+  const cam=cameraAt(t), p=project(c.pos.x,c.pos.y,c.z,cam);
+  let dx=0,dy=0,sMul=1,rot=cam.roll,vscale=1,hscale=1,alpha=1,clip=null,glow=0;
+  // входная фаза
+  if(t<c.t1){
+    const r=(t-c.t0)/c.inDur;
+    if(c.in==='fall'){dy=-(1-eOutCubic(r))*H*0.55; vscale=lerp(1.25,1,eOutQuint(r)); alpha=smooth(0,.4,r);
+      if(c.rollIn)rot+=(1-eOutCubic(r))*c.rollIn*Math.PI/180;}
+    else if(c.in==='slide'){dx=(1-eOutQuint(r))*(c.sdx||-240); alpha=smooth(0,.45,r);}
+    else if(c.in==='mask'){clip=eInOut(r); alpha=1;}
+    else if(c.in==='scale'){sMul=lerp(0.18,1,eOutCubic(r)); alpha=smooth(0,.5,r);
+      if(c.rollIn)rot+=(1-eOutCubic(r))*c.rollIn*Math.PI/180;}
+    else if(c.in==='roll'){rot+=(1-eOutCubic(r))*(c.rollIn||-10)*Math.PI/180; vscale=lerp(0.55,1,eOutCubic(r)); alpha=smooth(0,.5,r);}
+    else if(c.in==='rise'){dy=(1-eOutCubic(r))*140; alpha=smooth(0,.5,r);}
+    else alpha=smooth(0,1,r);
+  } else if(t>c.t2s){
+    const r=(t-c.t2s)/c.outDur;
+    if(c.out==='fade')alpha=1-smooth(0,1,r);
+    else if(c.out==='up'){dy=-eInCubic(r)*150;alpha=1-smooth(.1,1,r);}
+    else if(c.out==='fall'){dy=eInCubic(r)*H*0.5;alpha=1-smooth(.2,1,r);rot+=r*0.1;}
+    else if(c.out==='shrink'){sMul=lerp(1,0.72,eInOut(r));alpha=1-smooth(0,1,r);}
+    else if(c.out==='dissolve'){alpha=1;/* обрабатывается отдельно */}
+    else if(c.out==='hold')alpha=1;
+  }
+  // лёгкая «жизнь» на удержании
+  if(t>=c.t1&&t<=c.t2s){
+    dy+=2.2*drift(t,0.8,c.pos.x); dx+=1.8*drift(t,0.7,c.pos.y);
+    if(c.breath)sMul*= (1+0.03*Math.sin((t-c.t0)*5.0));
+  }
+  return {x:p.x+dx*p.s,y:p.y+dy*p.s,s:p.s*sMul,rot,vscale,hscale,alpha,clip};
+}
+
+function drawCue(c,t){
+  if(c.out==='dissolve'&&t>c.t2s){ // распад в прах
+    const q=clamp((t-c.t2s)/c.outDur,0,1);
+    const cam=cameraAt(t),p=project(c.pos.x,c.pos.y,c.z,cam);
+    const bmp=wordBitmap(c.text,c.font,c.sizeRef);
+    drawShatter(bmp,p.x,p.y,p.s,q);return;
+  }
+  const st=cueState(c,t);if(!st||st.alpha<=0.003)return;
+  // motion blur: сэмплируем экранную скорость
+  const dtp=1/FPS, prev=cueState(c,t-dtp);
+  let taps=1;
+  if(prev){const sp=Math.hypot(st.x-prev.x,st.y-prev.y);taps=clamp(Math.round(sp/14),1,7);}
+  const base={font:c.font,color:c.color,tracking:c.tracking||0,sizeRef:c.sizeRef,clip:st.clip};
+  if(taps<=1){
+    drawWord(c.text,st.x,st.y,{...base,s:st.s,rot:st.rot,vscale:st.vscale,hscale:st.hscale,alpha:st.alpha});
+  }else{
+    for(let k=taps-1;k>=0;k--){
+      const tt=t-(k/taps)*dtp, s2=cueState(c,tt);if(!s2)continue;
+      const a=st.alpha*((taps-k)/taps)/ (k===0?1:1.8);
+      drawWord(c.text,s2.x,s2.y,{...base,s:s2.s,rot:s2.rot,vscale:s2.vscale,hscale:s2.hscale,alpha:a,clip:k===0?st.clip:null,shadow:k===0});
+    }
+  }
+}
+
+/* ===========================================================================
+   ЖИВИ — единственное цветное слово. Искра -> во весь экран -> оседает якорем.
+   =========================================================================== */
+function drawLive(t){
+  const t0=14.45, done=19.8;
+  if(t<t0-0.3||t>done)return;
+  const cam=cameraAt(t);
+  // траектория размера/позиции во времени жизни слова
+  let size, y, alpha=1, glow, ca=0, sMul=1;
+  if(t<14.9){const r=clamp((t-t0)/0.45,0,1);sMul=lerp(0.05,1,eOutCubic(r));size=430;y=0;alpha=smooth(0,.35,r);glow=lerp(2.2,1.1,r);ca=lerp(26,6,r)*(1-r)+6;}
+  else if(t<16.4){size=430;y=0;alpha=1;glow=1.0+0.12*Math.sin((t-14.9)*3.2);ca=5;}
+  else if(t<17.1){const r=clamp((t-16.4)/0.7,0,1);size=lerp(430,215,eInOut(r));y=lerp(0,-258,eInOut(r));alpha=1;glow=lerp(1.0,0.8,r);ca=4;}
+  else if(t<19.2){size=215;y=-258;alpha=1;glow=0.8+0.06*Math.sin(t*2.2);ca=3;}
+  else{const r=clamp((t-19.2)/0.6,0,1);size=lerp(215,232,r);y=-258-r*22;alpha=1-smooth(.2,1,r);glow=0.8*(1-r);ca=3;}
+  const p=project(0,y,0,cam);
+  const font=FONT.black(Math.round(size));
+  // лёгкая жизнь
+  const yy=p.y+2.5*drift(t,0.9,2.0)*p.s, xx=p.x+2.0*drift(t,0.8,0.5)*p.s;
+  // радиальное тёплое свечение-подложка
+  if(glow>0){
+    ctx.save();ctx.globalCompositeOperation='lighter';
+    const rg=ctx.createRadialGradient(xx,yy,0,xx,yy,size*1.9*p.s);
+    rg.addColorStop(0,`rgba(255,150,60,${0.22*glow})`);rg.addColorStop(0.4,`rgba(255,110,40,${0.10*glow})`);rg.addColorStop(1,'rgba(255,90,30,0)');
+    ctx.fillStyle=rg;ctx.fillRect(0,0,W,H);ctx.restore();
+  }
+  drawWord('ЖИВИ',xx,yy,{font,color:'live',tracking:6,sizeRef:size,s:p.s*sMul,rot:cam.roll,alpha,glow,ca});
+}
+
+/* ===========================================================================
+   Фон: пыль (параллакс), средний «призрачный» слой, виньет, зерно
+   =========================================================================== */
+let DUST=[],EMBERS=[];
+function setup(){
+  const rng=mulberry32(1337);
+  DUST=[];for(let i=0;i<190;i++){DUST.push({x:(rng()*2-1)*1500,y:(rng()*2-1)*950,z:260+rng()*2500,r:0.6+rng()*2.4,ph:rng()*10,sp:4+rng()*10});}
+  EMBERS=[];const r2=mulberry32(99);for(let i=0;i<90;i++){EMBERS.push({x:(r2()*2-1)*1300,y:(r2()*2-1)*900,z:240+r2()*2000,r:0.8+r2()*2.6,ph:r2()*10,sp:30+r2()*60,fl:r2()*6});}
+}
+// спрайт мягкой точки
+const dot=(()=>{const c=document.createElement('canvas');c.width=c.height=32;const g=c.getContext('2d');
+  const rg=g.createRadialGradient(16,16,0,16,16,16);rg.addColorStop(0,'#fff');rg.addColorStop(1,'rgba(255,255,255,0)');
+  g.fillStyle=rg;g.fillRect(0,0,32,32);return c;})();
+function drawDust(t,cam){
+  ctx.save();ctx.globalCompositeOperation='lighter';
+  for(const d of DUST){
+    let y=d.y+ (t*d.sp)%1900-950; // медленный дрейф вниз (wrap)
+    const p=project(d.x,y,d.z,cam);if(p.s<=0)continue;
+    const a=clamp((0.26-(d.z-260)/2500*0.22),0.02,0.26)*(0.6+0.4*Math.sin(t*0.8+d.ph));
+    const r=d.r*p.s*3.2;ctx.globalAlpha=a*0.5;
+    ctx.drawImage(dot,p.x-r,p.y-r,r*2,r*2);
+  }
+  ctx.restore();
+}
+function drawEmbers(t,cam){ // угольки поднимаются после вольты
+  const amt=warmth(t);if(amt<=0.01)return;
+  ctx.save();ctx.globalCompositeOperation='lighter';
+  for(const e of EMBERS){
+    let y=e.y-(t*e.sp)%1900+950; // вверх
+    const p=project(e.x,y,e.z,cam);if(p.s<=0)continue;
+    const fl=0.5+0.5*Math.sin(t*3+e.fl);
+    const a=clamp(0.22-(e.z-240)/2000*0.18,0.02,0.22)*amt*fl;
+    const r=e.r*p.s*3.0;ctx.globalAlpha=a;
+    // тёплый оттенок уголька
+    ctx.globalCompositeOperation='lighter';
+    const rg=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r);rg.addColorStop(0,'rgba(255,170,80,1)');rg.addColorStop(1,'rgba(255,120,40,0)');
+    ctx.fillStyle=rg;ctx.beginPath();ctx.arc(p.x,p.y,r,0,7);ctx.fill();
+  }
+  ctx.restore();
+}
+function drawGhost(t,cam){ // средний план: гигантское тусклое слово (уходит в финале)
+  const fade=(1-smooth(18.6,19.6,t));if(fade<=0.01)return;
+  const p=project(-150,70,1550,cam);
+  const warm=warmth(t);
+  const col=warm>0.3?'#2e2620':'#2a2a30';
+  ctx.save();ctx.globalAlpha=(0.042+0.018*Math.sin(t*0.4))*fade;
+  drawWord('mori',p.x,p.y,{font:FONT.black(900),color:col,sizeRef:900,s:p.s,rot:cam.roll*0.5+0.04,alpha:1,shadow:false,tracking:20});
+  ctx.restore();
+}
+// виньет (кэш по теплоте округлённой)
+function drawVignette(t){
+  const wmt=warmth(t);
+  const g=ctx.createRadialGradient(W/2,H*0.46,H*0.2,W/2,H*0.5,H*0.95);
+  g.addColorStop(0,'rgba(0,0,0,0)');
+  g.addColorStop(0.65,`rgba(${Math.round(lerp(6,18,wmt))},${Math.round(lerp(8,11,wmt))},${Math.round(lerp(14,8,wmt))},0.35)`);
+  g.addColorStop(1,`rgba(${Math.round(lerp(2,10,wmt))},${Math.round(lerp(3,6,wmt))},${Math.round(lerp(6,4,wmt))},0.92)`);
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+}
+// зерно (детерминированное по кадру)
+let noiseTiles=null;
+function buildNoise(){noiseTiles=[];for(let n=0;n<4;n++){const c=document.createElement('canvas');c.width=c.height=256;const g=c.getContext('2d');const img=g.createImageData(256,256);const rng=mulberry32(7+n);for(let i=0;i<img.data.length;i+=4){const v=128+(rng()*2-1)*70;img.data[i]=img.data[i+1]=img.data[i+2]=v;img.data[i+3]=255;}g.putImageData(img,0,0);noiseTiles.push(c);}}
+function drawGrain(t){
+  if(!noiseTiles)buildNoise();
+  const fr=Math.round(t*FPS);const tile=noiseTiles[fr%4];
+  const rng=mulberry32(fr*2654435761);const ox=Math.floor(rng()*256),oy=Math.floor(rng()*256);
+  ctx.save();ctx.globalCompositeOperation='overlay';ctx.globalAlpha=0.045;
+  for(let y=-oy;y<H;y+=256)for(let x=-ox;x<W;x+=256)ctx.drawImage(tile,x,y);
+  ctx.restore();
+}
+
+/* ===========================================================================
+   Кадр
+   =========================================================================== */
+function renderAt(t){
+  t=clamp(t,0,TOTAL);
+  const cam=cameraAt(t);
+  ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle=bg(t);ctx.fillRect(0,0,W,H);
+  drawGhost(t,cam);
+  drawDust(t,cam);
+  // системный счётчик (S1) — ощущение идущего времени
+  if(t<2.7){const fr=Math.round(t*FPS);ctx.save();ctx.globalAlpha=clamp(smooth(0.2,0.8,t)*(1-smooth(2.3,2.7,t)),0,1)*0.5;
+    ctx.font=FONT.mono(34);ctx.fillStyle=ASH_D;ctx.textAlign='left';ctx.textBaseline='alphabetic';
+    ctx.fillText(String(1000+fr).padStart(6,'0'),120,H-90);
+    ctx.textAlign='right';ctx.fillText('memento',W-120,H-90);ctx.restore();}
+  // слова
+  for(const c of CUES)drawCue(c,t);
+  drawLive(t);
+  drawEmbers(t,cam);
+  drawVignette(t);
+  drawGrain(t);
+}
+
+window.__ready=false;
+window.__renderAt=renderAt;
+window.__TOTAL=TOTAL;window.__FPS=FPS;
+setup();buildNoise();
+(async()=>{ if(document.fonts&&document.fonts.ready){try{
+  // прогреть веса/гарнитуры
+  await document.fonts.load('900 200px "Inter Display"');
+  await document.fonts.load('200 200px "Inter Display"');
+  await document.fonts.load('italic 500 64px "DejaVu Serif"');
+  await document.fonts.load('500 58px "JetBrains Mono"');
+  await document.fonts.ready;}catch(e){}}
+  renderAt(0);window.__ready=true;
+})();
+</script>
+</body>
+</html>

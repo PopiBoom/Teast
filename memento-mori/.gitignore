@@ -1,0 +1,5 @@
+# build / inspection artifacts (регенерируются через build.sh)
+frames/
+proof/
+review/
+audio.wav
