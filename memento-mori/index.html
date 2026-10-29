@@ -165,18 +165,12 @@ function drawCue(c,t,dim){
 function rr(x,y,w,h,r){ctx.beginPath();ctx.roundRect(x,y,w,h,r);}
 function bubblePath(w,h,tail){const r=Math.min(30,h/2);ctx.beginPath();ctx.roundRect(-w/2,-h/2,w,h,r);
   if(tail){ctx.moveTo(-w/2+4,h/2-24);ctx.quadraticCurveTo(-w/2-4,h/2-2,-w/2-20,h/2);ctx.quadraticCurveTo(-w/2+6,h/2+2,-w/2+22,h/2-6);}}
-function drawCabbage(r,alpha){ // аватар канала: кочан
-  ctx.save();ctx.globalAlpha*=alpha;
-  const g=ctx.createRadialGradient(-r*0.3,-r*0.35,r*0.1,0,0,r);g.addColorStop(0,'#f4f0e8');g.addColorStop(1,'#cfc8bb');
-  ctx.fillStyle=g;ctx.beginPath();ctx.arc(0,0,r,0,7);ctx.fill();
-  ctx.strokeStyle='#14171d';ctx.lineWidth=r*0.075;ctx.lineCap='round';
-  ctx.beginPath();ctx.moveTo(0,r*0.78);ctx.quadraticCurveTo(-r*0.1,0,r*0.05,-r*0.62);ctx.stroke();
-  ctx.beginPath();ctx.moveTo(-r*0.05,r*0.7);ctx.quadraticCurveTo(-r*0.75,r*0.35,-r*0.55,-r*0.45);ctx.stroke();
-  ctx.beginPath();ctx.moveTo(r*0.05,r*0.7);ctx.quadraticCurveTo(r*0.75,r*0.35,r*0.55,-r*0.45);ctx.stroke();
-  ctx.lineWidth=r*0.05;
-  ctx.beginPath();ctx.moveTo(-r*0.3,r*0.3);ctx.quadraticCurveTo(-r*0.45,-r*0.1,-r*0.25,-r*0.35);ctx.stroke();
-  ctx.beginPath();ctx.moveTo(r*0.3,r*0.3);ctx.quadraticCurveTo(r*0.45,-r*0.1,r*0.25,-r*0.35);ctx.stroke();
+const AVATAR=new Image();AVATAR.src='avatar.jpg';
+function drawAvatar(r){ // аватар канала (как в Telegram — круг)
+  ctx.save();ctx.beginPath();ctx.arc(0,0,r,0,7);ctx.clip();
+  if(AVATAR.complete&&AVATAR.naturalWidth)ctx.drawImage(AVATAR,-r,-r,r*2,r*2);else{ctx.fillStyle='#333';ctx.fill();}
   ctx.restore();
+  ctx.strokeStyle='rgba(255,255,255,0.12)';ctx.lineWidth=Math.max(1.5,r*0.03);ctx.beginPath();ctx.arc(0,0,r,0,7);ctx.stroke();
 }
 function drawCheck(x,y,s,color,width){ctx.strokeStyle=color;ctx.lineWidth=width;ctx.lineCap='round';ctx.lineJoin='round';
   ctx.beginPath();ctx.moveTo(x-s*0.5,y);ctx.lineTo(x-s*0.12,y+s*0.38);ctx.lineTo(x+s*0.55,y-s*0.42);ctx.stroke();}
@@ -212,7 +206,7 @@ function drawBanner(t){
     ctx.shadowColor='rgba(0,0,0,0.55)';ctx.shadowBlur=50;ctx.shadowOffsetY=18;
     rr(-w/2,-h/2,w,h,36);ctx.fillStyle='rgba(32,36,46,0.96)';ctx.fill();ctx.shadowColor='transparent';
     ctx.strokeStyle=UI_B;ctx.lineWidth=2;ctx.stroke();
-    ctx.save();ctx.translate(-w/2+98,0);drawCabbage(58,1);ctx.restore();
+    ctx.save();ctx.translate(-w/2+98,0);drawAvatar(60);ctx.restore();
     setFont(FONT.semi(44),0);ctx.fillStyle=BONE;ctx.textBaseline='middle';ctx.textAlign='left';ctx.fillText('Memento Mori',-w/2+184,-28);
     setFont(FONT.reg(36),0);ctx.fillStyle=ASH;ctx.fillText('1 новое сообщение',-w/2+184,28);
     setFont(FONT.mono(26),0);ctx.fillStyle=ASH_D;ctx.textAlign='right';ctx.fillText('сейчас',w/2-40,-28);
@@ -425,7 +419,7 @@ function drawCard(t){
     const w=980,h=660;ctx.save();ctx.globalAlpha=st.alpha*a;ctx.translate(st.x,st.y);ctx.rotate(st.rot);ctx.scale(st.s*1.22,st.s*1.22*st.vs);
     ctx.shadowColor='rgba(0,0,0,0.6)';ctx.shadowBlur=80;ctx.shadowOffsetY=30;
     rr(-w/2,-h/2,w,h,48);ctx.fillStyle='#181c25';ctx.fill();ctx.shadowColor='transparent';ctx.strokeStyle='rgba(255,255,255,0.08)';ctx.lineWidth=2;ctx.stroke();
-    ctx.save();ctx.translate(0,-170);drawCabbage(96,1);ctx.restore();
+    ctx.save();ctx.translate(0,-170);drawAvatar(104);ctx.restore();
     setFont(FONT.black(84),0);ctx.fillStyle=BONE;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('Memento Mori',0,-6);
     setFont(FONT.mono(30),3);ctx.fillStyle=ASH;ctx.fillText('Telegram-канал · KAPUSTKA',0,66);
     // кнопка
@@ -542,7 +536,8 @@ window.__ready=false;window.__renderAt=renderAt;window.__TOTAL=TOTAL;window.__FP
   await document.fonts.load('700 200px "Inter Display"');await document.fonts.load('600 40px "Inter"');
   await document.fonts.load('400 40px "Inter"');await document.fonts.load('500 40px "Inter"');
   await document.fonts.load('italic 500 64px "DejaVu Serif"');await document.fonts.load('500 40px "JetBrains Mono"');
-  await document.fonts.ready;}catch(e){}
+  await document.fonts.ready;
+  if(!AVATAR.complete)await new Promise(r=>{AVATAR.onload=AVATAR.onerror=r;});}catch(e){}
   setup();renderAt(0);window.__ready=true;})();
 </script>
 </body>
